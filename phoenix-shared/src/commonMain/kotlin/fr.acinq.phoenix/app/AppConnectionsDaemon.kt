@@ -2,6 +2,7 @@ package fr.acinq.phoenix.app
 
 import fr.acinq.eclair.blockchain.electrum.ElectrumClient
 import fr.acinq.eclair.utils.Connection
+import fr.acinq.eclair.utils.ServerAddress
 import fr.acinq.phoenix.data.ElectrumConfig
 import fr.acinq.phoenix.utils.NetworkMonitor
 import fr.acinq.phoenix.utils.NetworkState
@@ -72,6 +73,8 @@ class AppConnectionsDaemon(
     private val httpApiControlFlow = MutableStateFlow(TrafficControl())
     private val httpApiControlChanges = Channel<TrafficControl.() -> TrafficControl>()
 
+    var lastElectrumServerAddress: ServerAddress? = null
+
     init {
         fun enableControlFlow(
             label: String,
@@ -96,13 +99,14 @@ class AppConnectionsDaemon(
                     it.networkIsAvailable && it.disconnectCount <= 0 -> {
                         if (electrumConnectionJob == null) {
                             electrumConnectionJob = connectionLoop("Electrum", electrumClient.connectionState) {
-                                val electrumConfig = configurationManager.electrumConfig().value
-                                if (electrumConfig == null) {
+                                val electrumServerAddress = configurationManager.electrumServerAddress()
+                                if (electrumServerAddress == null) {
                                     logger.info { "ignored electrum connection opportunity because no server is configured yet" }
                                 } else {
-                                    logger.info { "connecting to electrum using config=$electrumConfig" }
-                                    electrumClient.connect(electrumConfig.server)
+                                    logger.info { "connecting to electrum server=$electrumServerAddress" }
+                                    electrumClient.connect(electrumServerAddress)
                                 }
+                                lastElectrumServerAddress = electrumServerAddress
                             }
                         }
                     }
@@ -202,18 +206,46 @@ class AppConnectionsDaemon(
         // listen to electrum configuration changes and reconnect when needed.
         launch {
             var previousElectrumConfig: ElectrumConfig? = null
-            configurationManager.electrumConfig().collect { config ->
-                if (config == null) {
+            configurationManager.electrumConfig().collect { newElectrumConfig ->
+                val changed = when (val oldElectrumConfig = previousElectrumConfig) {
+                    is ElectrumConfig.Custom -> {
+                        when (newElectrumConfig) {
+                            is ElectrumConfig.Custom -> { // custom -> custom
+                                newElectrumConfig.server.host != oldElectrumConfig.server.host ||
+                                newElectrumConfig.server.port != oldElectrumConfig.server.port
+                            }
+                            is ElectrumConfig.Random -> true // custom -> random
+                            else -> true // custom -> null
+                        }
+                    }
+                    is ElectrumConfig.Random -> {
+                        when (newElectrumConfig) {
+                            is ElectrumConfig.Custom -> true // random -> custom
+                            is ElectrumConfig.Random -> false // random -> random
+                            else -> true // random -> null
+                        }
+                    }
+                    else -> {
+                        when (newElectrumConfig) {
+                            null -> false // null -> null
+                            else -> true // null -> (custom || random)
+                        }
+                    }
+                }
+                if (changed) {
+                    logger.info { "electrum server config changed to=$newElectrumConfig, reconnecting..." }
                     electrumControlChanges.send { incrementDisconnectCount() }
-                } else if (config.server.host != previousElectrumConfig?.server?.host) {
-                    logger.info { "electrum server config updated to=$config, reconnecting..." }
-                    electrumControlChanges.send { incrementDisconnectCount() }
-                    delay(500)
+                    if (previousElectrumConfig != null) {
+                        // The electrumConfig is only null on app launch.
+                        // It gets set by the client app during launch,
+                        // and from that point forward it's either Custom or Random.
+                        delay(500)
+                    }
                     // We need to delay the next connection vote because the collector WILL skip fast updates (see documentation)
                     // and ignore the change since the TrafficControl object would not have changed.
                     electrumControlChanges.send { decrementDisconnectCount() }
                 }
-                previousElectrumConfig = config
+                previousElectrumConfig = newElectrumConfig
             }
         }
     }
