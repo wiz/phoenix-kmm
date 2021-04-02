@@ -17,6 +17,8 @@
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleURLTypes</key>
+	<key>MinimumOSVersion</key>
+	<string>14.0</string>
 	<array>
 		<dict>
 			<key>CFBundleTypeRole</key>
