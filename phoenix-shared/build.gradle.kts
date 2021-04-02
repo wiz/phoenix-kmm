@@ -61,7 +61,7 @@ kotlin {
 
     sourceSets {
 
-        val eclairkmpVersion = "1.0-beta8"
+        val eclairkmpVersion = "snapshot"
         val coroutinesVersion = "1.4.2-native-mt"
         val serializationVersion = "1.1.0"
         val secp256k1Version = "0.4.1"
